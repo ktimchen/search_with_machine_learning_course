@@ -5,6 +5,8 @@ from tqdm import tqdm
 import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
+import numpy as np
+import collections
 
 def transform_name(product_name):
     # IMPLEMENT
@@ -62,8 +64,11 @@ if __name__ == '__main__':
     files = glob.glob(f'{directory}/*.xml')
     print("Writing results to %s" % output_file)
     with multiprocessing.Pool() as p:
-        all_labels = tqdm(p.imap(_label_filename, files), total=len(files))
+        all_labels = list(tqdm(p.imap(_label_filename, files), total=len(files)))
+        label_count_dict = collections.Counter(cat for label_list in all_labels for cat, name in label_list)
+        pruned_cats = [cat for cat, count in label_count_dict.items() if count >= min_products]
         with open(output_file, 'w') as output:
             for label_list in all_labels:
                 for (cat, name) in label_list:
-                    output.write(f'__label__{cat} {name}\n')
+                    if cat in pruned_cats:
+                        output.write(f'__label__{cat} {name}\n')
