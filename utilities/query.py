@@ -12,7 +12,7 @@ import pandas as pd
 import fileinput
 import logging
 import fasttext
-
+import sys
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -198,6 +198,36 @@ def process_non_alpha(x: str):
     x = " ".join(stemmer.stem(word) for word in x.split())
     return x
 
+from sentence_transformers import SentenceTransformer
+model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
+print(f"Sentence transformer: {model}")
+
+
+def create_vector_query(user_query,num_results, source=None):
+    vector = model.encode([user_query])[0]
+    query_obj = {
+        "size": num_results,
+        "query": {
+            "knn": {
+                "embedding": {
+                    "vector": vector,
+                    "k": num_results
+                }
+            }
+        }
+    }
+    if source is not None:  # otherwise use the default and retrieve all source
+        query_obj["_source"] = source
+    return query_obj
+
+
+def vector_search(client, user_query, index="bbuy_products", num_results=10):
+    query_obj = create_vector_query(user_query, num_results, source=["name", "shortDescription"])
+    response = client.search(query_obj, index=index)
+    if len(response['hits']['hits']) > 0:
+        hits = response['hits']['hits']
+        print(json.dumps(response, indent=2))
+
 
 def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc"):
     #### W3: classify the query
@@ -236,8 +266,11 @@ if __name__ == "__main__":
                          help='The OpenSearch port')
     general.add_argument('--user',
                          help='The OpenSearch admin.  If this is set, the program will prompt for password too. If not set, use default of admin/admin')
+    general.add_argument('--vector', action='store_true', default=False,
+                            help='Flag for vector embeddings')
 
     args = parser.parse_args()
+    print(f"args.vector: {args.vector}")
 
     if len(vars(args)) == 0:
         parser.print_usage()
@@ -265,12 +298,15 @@ if __name__ == "__main__":
     index_name = args.index
     query_prompt = "\nEnter your query (type 'Exit' to exit or hit ctrl-c):"
     print(query_prompt)
-    for line in fileinput.input():
+    for line in sys.stdin:
         query = line.rstrip()
         if query == "Exit":
             break
-        search(client=opensearch, user_query=query, index=index_name)
+        # use embeddings or not
+        if args.vector:
+            vector_search(client=opensearch, user_query=query, index=index_name)
+        else:
+            search(client=opensearch, user_query=query, index=index_name)
+
 
         print(query_prompt)
-
-    
