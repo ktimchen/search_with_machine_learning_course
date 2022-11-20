@@ -11,7 +11,8 @@ from urllib.parse import urljoin
 import pandas as pd
 import fileinput
 import logging
-
+import fasttext
+import sys
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -186,11 +187,64 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
     return query_obj
 
 
+fasttext_query_model = fasttext.load_model("week3/model_queries.bin")
+import re
+import nltk
+stemmer = nltk.stem.PorterStemmer()
+NON_ALPHANUM_PATTERN = re.compile(r'[^a-zA-Z0-9]')
+
+def process_non_alpha(x: str):
+    x = re.sub(NON_ALPHANUM_PATTERN, ' ', x.lower())
+    x = " ".join(stemmer.stem(word) for word in x.split())
+    return x
+
+from sentence_transformers import SentenceTransformer
+model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
+print(f"Sentence transformer: {model}")
+
+
+def create_vector_query(user_query,num_results, source=None):
+    vector = model.encode([user_query])[0]
+    query_obj = {
+        "size": num_results,
+        "query": {
+            "knn": {
+                "embedding": {
+                    "vector": vector,
+                    "k": num_results
+                }
+            }
+        }
+    }
+    if source is not None:  # otherwise use the default and retrieve all source
+        query_obj["_source"] = source
+    return query_obj
+
+
+def vector_search(client, user_query, index="bbuy_products", num_results=10):
+    query_obj = create_vector_query(user_query, num_results, source=["name", "shortDescription"])
+    response = client.search(query_obj, index=index)
+    if len(response['hits']['hits']) > 0:
+        hits = response['hits']['hits']
+        print(json.dumps(response, indent=2))
+
+
 def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc"):
     #### W3: classify the query
     #### W3: create filters and boosts
     # Note: you may also want to modify the `create_query` method above
-    query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir, source=["name", "shortDescription"])
+    labels, probs = fasttext_query_model.predict(process_non_alpha(user_query), 30)
+    pred_categories = [labels[i].replace("__label__", "") for i in range(len(labels))] 
+    
+    filters = None
+    if (pred_categories is not None):
+        filters = []
+        filters.append(
+            {"terms": {"categoryPathIds.keyword": pred_categories}}
+        )
+    
+
+    query_obj = create_query(user_query, click_prior_query=None, filters=filters, sort=sort, sortDir=sortDir, source=["name", "shortDescription"])
     logging.info(query_obj)
     response = client.search(query_obj, index=index)
     if response and response['hits']['hits'] and len(response['hits']['hits']) > 0:
@@ -212,8 +266,11 @@ if __name__ == "__main__":
                          help='The OpenSearch port')
     general.add_argument('--user',
                          help='The OpenSearch admin.  If this is set, the program will prompt for password too. If not set, use default of admin/admin')
+    general.add_argument('--vector', action='store_true', default=False,
+                            help='Flag for vector embeddings')
 
     args = parser.parse_args()
+    print(f"args.vector: {args.vector}")
 
     if len(vars(args)) == 0:
         parser.print_usage()
@@ -241,12 +298,15 @@ if __name__ == "__main__":
     index_name = args.index
     query_prompt = "\nEnter your query (type 'Exit' to exit or hit ctrl-c):"
     print(query_prompt)
-    for line in fileinput.input():
+    for line in sys.stdin:
         query = line.rstrip()
         if query == "Exit":
             break
-        search(client=opensearch, user_query=query, index=index_name)
+        # use embeddings or not
+        if args.vector:
+            vector_search(client=opensearch, user_query=query, index=index_name)
+        else:
+            search(client=opensearch, user_query=query, index=index_name)
+
 
         print(query_prompt)
-
-    

@@ -16,7 +16,7 @@ output_file_name = r'/workspace/datasets/fasttext/labeled_queries.txt'
 
 parser = argparse.ArgumentParser(description='Process arguments.')
 general = parser.add_argument_group("general")
-general.add_argument("--min_queries", default=1,  help="The minimum number of queries per category label (default is 1)")
+general.add_argument("--min_queries", default=1000,  help="The minimum number of queries per category label (default is 1)")
 general.add_argument("--output", default=output_file_name, help="the file to output to")
 
 args = parser.parse_args()
@@ -49,8 +49,52 @@ queries_df = pd.read_csv(queries_file_name)[['category', 'query']]
 queries_df = queries_df[queries_df['category'].isin(categories)]
 
 # IMPLEMENT ME: Convert queries to lowercase, and optionally implement other normalization, like stemming.
+import re
+NON_ALPHANUM_PATTERN = re.compile(r'[^a-zA-Z0-9]')
+
+def process_non_alpha(x: str):
+    x = re.sub(NON_ALPHANUM_PATTERN, ' ', x.lower())
+    x = " ".join(stemmer.stem(word) for word in x.split())
+    return x
+
+queries_df["query"] = queries_df["query"].apply(process_non_alpha)
 
 # IMPLEMENT ME: Roll up categories to ancestors to satisfy the minimum number of queries per category.
+queries_counts_threshold = 1000
+
+
+
+parents_lookup_table = parents_df.set_index("category")["parent"]
+# just to be on a safe side
+parents_df.loc[root_category_id] = root_category_id
+print(parents_lookup_table)
+
+print(f"Number of categories before roll-ups: {queries_df['category'].nunique()}")
+
+queries_counts_df = (queries_df
+ .groupby(["category"], as_index=False)
+ [["query"]]
+ .agg(q_counts = ("query", "count"))
+)
+
+cats_below_threshold = queries_counts_df.query("q_counts <= @queries_counts_threshold")["category"].to_list()
+num_cats_under_threshold = len(cats_below_threshold)
+
+while num_cats_under_threshold > 0:
+    # bump all of the categories up simultaneously
+    mask = queries_df["category"].isin(cats_below_threshold)
+    queries_df.loc[mask, "category"] = queries_df.loc[mask, "category"].map(parents_lookup_table)
+    queries_counts_df = (queries_df
+        .groupby(["category"], as_index=False)
+        [["query"]]
+        .agg(q_counts = ("query", "count"))
+    )
+    cats_below_threshold = queries_counts_df.query("q_counts <= @queries_counts_threshold")["category"].to_list()
+    num_cats_under_threshold = len(cats_below_threshold)
+    print(f"Number of categories below the threshold: {num_cats_under_threshold}")
+
+print(f"Number of categories after roll-ups: {queries_df['category'].nunique()}")
+
 
 # Create labels in fastText format.
 queries_df['label'] = '__label__' + queries_df['category']
